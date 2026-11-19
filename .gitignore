@@ -1,0 +1,15 @@
+.venv312/
+venv/
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+.env
+.DS_Store
+dist/
+build/
+.next/
+.turbo/
+out/
+coverage/
+*.tsbuildinfo

@@ -1,0 +1,24 @@
+{
+  "name": "b2b-microsaas",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Private AI Document & Data Analyst - B2B Micro-SaaS",
+  "scripts": {
+    "dev": "docker compose up -d && cd apps/web && pnpm dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "format": "pnpm -r format",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "install:all": "pnpm install",
+    "db:migrate": "cd services/api && python manage.py migrate",
+    "db:seed": "cd services/api && python manage.py seed",
+    "worker": "cd services/api && celery -A config worker --loglevel=info",
+    "smoke": "bash scripts/smoke.sh"
+  },
+  "devDependencies": {
+    "prettier": "^3.4.0",
+    "eslint": "^9.0.0"
+  },
+  "packageManager": "pnpm@9.15.0"
+}

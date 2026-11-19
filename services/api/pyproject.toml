@@ -1,0 +1,142 @@
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "b2b-api"
+version = "0.1.0"
+description = "B2B Micro-SaaS API - Private AI Document & Data Analyst"
+authors = ["B2B Micro-SaaS Team"]
+readme = "README.md"
+packages = [{include = "config"}, {include = "apps"}]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+django = "^4.2"
+djangorestframework = "^3.14"
+djangorestframework-simplejwt = "^5.3"
+django-cors-headers = "^4.4"
+django-environ = "^0.11"
+django-filter = "^23.0"
+drf-spectacular = "^0.27"
+psycopg2-binary = "^2.9"
+redis = "^5.0"
+celery = "^5.3"
+django-celery-results = "^2.5"
+django-celery-beat = "^2.5"
+boto3 = "^1.34"
+botocore = "^1.34"
+cryptography = "^42.0"
+python-magic = "^0.4"
+pdfplumber = "^0.11"
+openpyxl = "^3.1"
+pandas = "^2.2"
+numpy = "^1.26"
+openai = "^1.35"
+httpx = "^0.27"
+tenacity = "^8.2"
+structlog = "^24.0"
+python-json-logger = "^2.0"
+prometheus-client = "^0.19"
+django-prometheus = "^2.3"
+sentry-sdk = "^1.45"
+django-health-check = "^3.16"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0"
+pytest-django = "^4.8"
+pytest-cov = "^5.0"
+pytest-mock = "^3.12"
+factory-boy = "^3.3"
+ruff = "^0.5"
+black = "^24.0"
+mypy = "^1.10"
+django-stubs = "^4.2"
+djangorestframework-stubs = "^1.8"
+bandit = "^1.7"
+pip-audit = "^2.7"
+pre-commit = "^3.7"
+
+[tool.poetry.group.docs.dependencies]
+mkdocs = "^1.5"
+mkdocs-material = "^9.5"
+
+[tool.poetry.scripts]
+django = "django-admin"
+celery = "celery"
+manage = "python manage.py"
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+select = ["E", "F", "I", "W", "UP", "B", "C4", "PTH", "T20", "SIM", "RET", "ERA", "PD", "PGH", "PL", "TRY", "NPY", "RSE", "AIR", "PERF", "ARG", "COM", "DTZ", "TCH", "INT", "FLY", "PIE", "TID", "QL", "RUF", "EXE", "ISC", "ICN", "PT", "QF", "TD", "FUR", "LOG"]
+ignore = ["S101", "S106", "B008", "ERA001"]
+exclude = ["migrations", ".venv", "venv", "__pycache__", ".pytest_cache", "*.pyc"]
+
+[tool.black]
+target-version = ["py39"]
+line-length = 100
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | venv
+  | _build
+  | buck-out
+  | build
+  | dist
+  | migrations
+)/
+'''
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+strict_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+plugins = ["django_stubs_ext.plugin"]
+mypy_path = "services/api"
+
+[[tool.mypy.overrides]]
+module = ["django.*", "rest_framework.*", "celery.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+django_settings_module = "config.settings"
+testpaths = ["apps", "tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short --strict-markers"
+markers =
+    unit: "Unit tests"
+    integration: "Integration tests"
+    isolation: "Tenant isolation tests"
+    slow: "Slow tests"
+    e2e: "End-to-end tests"
+
+[tool.coverage.run]
+source = ["apps", "config"]
+omit = ["*/migrations/*", "*/tests/*", "manage.py", "config/wsgi.py", "config/asgi.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:"
+]
