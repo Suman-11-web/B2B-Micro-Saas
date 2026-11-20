@@ -27,6 +27,7 @@ env = environ.Env(
     S3_BUCKET=(str, ''),
     S3_ENDPOINT=(str, ''),
     KMS_KEY_ID=(str, ''),
+    USE_LOCAL_STORAGE=(bool, False),
     OPENAI_API_KEY=(str, ''),
     OPENAI_ORG_ID=(str, ''),
     OPENAI_BASE_URL=(str, 'https://api.openai.com/v1'),
@@ -193,7 +194,7 @@ REST_FRAMEWORK = {
         'rest_framework.filters.OrderingFilter',
         'rest_framework.filters.SearchFilter',
     ),
-    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.CursorPagination',
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 50,
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     'EXCEPTION_HANDLER': 'apps.accounts.exceptions.custom_exception_handler',
@@ -323,6 +324,7 @@ AWS_S3_BUCKET = env('S3_BUCKET')
 AWS_S3_ENDPOINT = env('S3_ENDPOINT')
 AWS_KMS_KEY_ID = env('KMS_KEY_ID')
 AWS_S3_VERIFY = not bool(AWS_ENDPOINT_URL)
+USE_LOCAL_STORAGE = env('USE_LOCAL_STORAGE')
 
 # S3 Presigned URL settings
 PRESIGNED_URL_EXPIRY = 3600  # 1 hour

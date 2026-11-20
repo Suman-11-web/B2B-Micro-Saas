@@ -32,6 +32,18 @@ def chunk_text(text: str, max_tokens: int = 512, overlap: int = 50) -> List[str]
     return chunks
 
 
+def _df_to_markdown(df: pd.DataFrame) -> str:
+    """Convert a DataFrame to a markdown table without requiring tabulate."""
+    cols = [str(c) for c in df.columns.tolist()]
+    lines = [
+        "| " + " | ".join(cols) + " |",
+        "| " + " | ".join(["---"] * len(cols)) + " |",
+    ]
+    for row in df.itertuples(index=False, name=None):
+        lines.append("| " + " | ".join("" if pd.isna(v) else str(v) for v in row) + " |")
+    return "\n".join(lines)
+
+
 def parse_pdf(filepath: str) -> Dict[str, Any]:
     """Parse PDF file and extract text with page info."""
     chunks = []
@@ -95,7 +107,7 @@ def parse_excel(filepath: str) -> Dict[str, Any]:
 
         # Create chunks from rows
         sheet_text = f"Sheet: {sheet_name}\n"
-        sheet_text += df.to_markdown(index=False)
+        sheet_text += _df_to_markdown(df)
 
         sheet_chunks = chunk_text(sheet_text)
         for i, chunk_text_content in enumerate(sheet_chunks):
@@ -132,7 +144,7 @@ def parse_csv(filepath: str) -> Dict[str, Any]:
     column_info['default'] = df.columns.tolist()
     sheet_names = ['default']
 
-    csv_text = df.to_markdown(index=False)
+    csv_text = _df_to_markdown(df)
     csv_chunks = chunk_text(csv_text)
 
     for i, chunk_text_content in enumerate(csv_chunks):
@@ -150,4 +162,27 @@ def parse_csv(filepath: str) -> Dict[str, Any]:
         'page_count': 0,
         'sheet_names': sheet_names,
         'column_info': column_info,
+    }
+
+
+def parse_txt(filepath: str) -> Dict[str, Any]:
+    """Parse plain text file."""
+    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+        text = f.read()
+
+    chunks = []
+    if text.strip():
+        for chunk_text_content in chunk_text(text):
+            chunks.append({
+                'content': chunk_text_content,
+                'token_count': count_tokens(chunk_text_content),
+                'page_number': 1,
+                'metadata': {'source': 'txt'},
+            })
+
+    return {
+        'chunks': chunks,
+        'page_count': 1,
+        'sheet_names': [],
+        'column_info': {},
     }

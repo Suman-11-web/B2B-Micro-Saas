@@ -114,14 +114,28 @@ def generate_answer(
             max_tokens=2000,
         )
 
-        # Extract function call
-        tool_call = response.choices[0].message.tool_calls[0]
-        result = json.loads(tool_call.function.arguments)
+        # Extract function call (or fall back to message content for OpenAI-compatible providers)
+        message = response.choices[0].message
+        if getattr(message, 'tool_calls', None):
+            tool_call = message.tool_calls[0]
+            result = json.loads(tool_call.function.arguments)
+        else:
+            content_text = (message.content or '').strip()
+            result = {
+                'answer': content_text or 'No answer generated.',
+                'confidence': 0.8,
+                'citations': [],
+                'summary': content_text[:200],
+                'follow_up_questions': [],
+                'requires_analytics': False,
+                'analysis_type': 'none',
+            }
 
         # Add token usage
-        result['tokens_input'] = response.usage.prompt_tokens
-        result['tokens_output'] = response.usage.completion_tokens
-        result['model'] = response.model
+        usage = getattr(response, 'usage', None)
+        result['tokens_input'] = getattr(usage, 'prompt_tokens', 0) or 0
+        result['tokens_output'] = getattr(usage, 'completion_tokens', 0) or 0
+        result['model'] = getattr(response, 'model', model)
 
         return result
 

@@ -115,6 +115,15 @@ class AuditMiddleware(MiddlewareMixin):
         return None
 
     def process_response(self, request, response):
+        # Defense-in-depth security headers
+        response.setdefault('X-Content-Type-Options', 'nosniff')
+        response.setdefault('X-Frame-Options', 'DENY')
+        response.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
+        response.setdefault('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
+        if request.path.startswith('/api/v1/auth/'):
+            response['Cache-Control'] = 'no-store, no-cache, must-revalidate, private'
+            response['Pragma'] = 'no-cache'
+
         # Log audit for mutating requests to audited paths
         if (hasattr(request, '_audit_info') and
             request._audit_info['method'] in self.AUDIT_METHODS and
