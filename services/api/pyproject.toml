@@ -121,12 +121,13 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short --strict-markers"
-markers =
-    unit: "Unit tests"
-    integration: "Integration tests"
-    isolation: "Tenant isolation tests"
-    slow: "Slow tests"
-    e2e: "End-to-end tests"
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "isolation: Tenant isolation tests",
+    "slow: Slow tests",
+    "e2e: End-to-end tests",
+]
 
 [tool.coverage.run]
 source = ["apps", "config"]
