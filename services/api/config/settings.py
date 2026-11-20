@@ -34,6 +34,8 @@ env = environ.Env(
     EMBEDDING_MODEL=(str, 'text-embedding-3-small'),
     CHAT_MODEL=(str, 'gpt-4o'),
     CHAT_MODEL_FALLBACK=(str, 'gpt-4o-mini'),
+    LLM_FAST_MODEL=(str, ''),
+    LLM_PRO_MODEL=(str, ''),
     CELERY_BROKER_URL=(str, 'redis://localhost:6379/1'),
     CELERY_RESULT_BACKEND=(str, 'django-db'),
     STRIPE_SECRET_KEY=(str, ''),
@@ -344,6 +346,8 @@ OPENAI_BASE_URL = env('OPENAI_BASE_URL')
 EMBEDDING_MODEL = env('EMBEDDING_MODEL')
 CHAT_MODEL = env('CHAT_MODEL')
 CHAT_MODEL_FALLBACK = env('CHAT_MODEL_FALLBACK')
+LLM_FAST_MODEL = env('LLM_FAST_MODEL') or CHAT_MODEL_FALLBACK
+LLM_PRO_MODEL = env('LLM_PRO_MODEL') or CHAT_MODEL
 
 # Embedding settings
 EMBEDDING_DIMENSIONS = 1536  # text-embedding-3-small
@@ -377,7 +381,7 @@ SUBSCRIPTION_PLANS = {
         'price_monthly_inr': 0,
         'price_monthly_usd': 0,
         'storage_limit_bytes': 1 * 1024 * 1024 * 1024,  # 1 GB
-        'query_limit_monthly': 50,
+        'query_limit_monthly': 12,
         'user_limit': 2,
         'features': ['basic_qa', 'csv_upload'],
         'stripe_price_id': '',

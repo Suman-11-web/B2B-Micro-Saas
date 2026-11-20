@@ -11,8 +11,10 @@ import { apiClient } from '@/lib/api';
 import {
   Activity,
   BarChart3,
+  Bot,
   Check,
   Copy,
+  Cpu,
   CreditCard,
   FileSpreadsheet,
   FileText,
@@ -21,12 +23,15 @@ import {
   LogOut,
   MessageCircle,
   QrCode,
+  Send,
   ShieldCheck,
   Sparkles,
   Trash2,
   Upload,
+  User,
   UserPlus,
   Users,
+  Zap,
 } from 'lucide-react';
 import {
   Bar,
@@ -46,6 +51,7 @@ import {
 
 type TabKey = 'qa' | 'documents' | 'charts' | 'team' | 'billing' | 'apikeys' | 'security';
 type ChartType = 'bar' | 'line' | 'pie';
+type ModelTier = 'auto' | 'vaultlite' | 'vaultpro';
 
 interface CompanyInfo {
   id: string;
@@ -70,6 +76,7 @@ interface DocumentItem {
 interface QueryItem {
   id: string;
   question: string;
+  document_ids?: string[];
   status: string;
   error_message?: string | null;
   result?: {
@@ -159,9 +166,17 @@ interface BillingOverview {
 
 const CHART_COLORS = ['#8b5cf6', '#06b6d4', '#10b981', '#f59e0b', '#ef4444', '#ec4899'];
 
+const STARTER_PROMPTS = [
+  'What is the total revenue across all months?',
+  'Which month had the highest revenue and which region was it?',
+  'Give me a complete executive summary of this document.',
+  'Compare performance across regions or departments.',
+];
+
 export default function DashboardPage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   const [activeTab, setActiveTab] = useState<TabKey>('qa');
   const [company, setCompany] = useState<CompanyInfo | null>(null);
@@ -172,8 +187,11 @@ export default function DashboardPage() {
   const [apiKeys, setApiKeys] = useState<ApiKeyItem[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>([]);
 
-  // Q&A & Upload state
+  // Chat & Upload state
   const [question, setQuestion] = useState('');
+  const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
+  const [modelTier, setModelTier] = useState<ModelTier>('auto');
+  const [copiedAnswerId, setCopiedAnswerId] = useState<string>('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [submittingQuery, setSubmittingQuery] = useState(false);
@@ -212,6 +230,9 @@ export default function DashboardPage() {
         d.mime_type === 'application/vnd.ms-excel')
   );
 
+  const docNameMap = new Map(documents.map((d) => [d.id, d.filename]));
+  const chronologicalQueries = [...queries].reverse();
+
   async function loadAllData() {
     try {
       const [compRes, docsRes, queriesRes] = await Promise.all([
@@ -221,8 +242,13 @@ export default function DashboardPage() {
       ]);
 
       setCompany(compRes.data);
-      setDocuments(docsRes.data.results || docsRes.data || []);
+      const docList: DocumentItem[] = docsRes.data.results || docsRes.data || [];
+      setDocuments(docList);
       setQueries(queriesRes.data.results || queriesRes.data || []);
+
+      // Keep selectedDocIds valid if a file was deleted
+      const validIds = new Set(docList.map((d) => d.id));
+      setSelectedDocIds((prev) => prev.filter((id) => validIds.has(id)));
 
       const [teamRes, billRes, keysRes, auditRes] = await Promise.allSettled([
         apiClient.listMemberships(),
@@ -286,6 +312,16 @@ export default function DashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, documents.length]);
 
+  useEffect(() => {
+    if (activeTab === 'qa') {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [queries.length, submittingQuery, activeTab]);
+
+  function toggleDocumentSelection(docId: string) {
+    setSelectedDocIds((prev) => (prev.includes(docId) ? prev.filter((id) => id !== docId) : [...prev, docId]));
+  }
+
   async function handleUpload(e: React.FormEvent) {
     e.preventDefault();
     if (!selectedFile) {
@@ -310,11 +346,13 @@ export default function DashboardPage() {
     }
   }
 
-  async function handleDeleteDocument(id: string) {
+  async function handleDeleteDocument(id: string, filename?: string) {
     setError('');
+    setSuccess('');
     try {
       await apiClient.deleteDocument(id);
-      setSuccess('Document deleted.');
+      setSuccess(filename ? `Deleted "${filename}".` : 'Document deleted.');
+      setSelectedDocIds((prev) => prev.filter((docId) => docId !== id));
       if (selectedChartDocId === id) {
         setSelectedChartDocId('');
         setChartDataset(null);
@@ -325,15 +363,21 @@ export default function DashboardPage() {
     }
   }
 
-  async function handleAsk(e: React.FormEvent) {
-    e.preventDefault();
-    if (!question.trim()) return;
+  async function handleAsk(e?: React.FormEvent, overrideQuestion?: string) {
+    if (e) e.preventDefault();
+    const promptText = (overrideQuestion ?? question).trim();
+    if (!promptText) return;
     setSubmittingQuery(true);
     setError('');
     setSuccess('');
 
     try {
-      await apiClient.createQuery({ question: question.trim(), source_filter: 'all' });
+      await apiClient.createQuery({
+        question: promptText,
+        source_filter: selectedDocIds.length > 0 ? 'documents' : 'all',
+        document_ids: selectedDocIds,
+        model_tier: modelTier,
+      });
       setQuestion('');
       await loadAllData();
     } catch (err: unknown) {
@@ -443,7 +487,7 @@ export default function DashboardPage() {
         await apiClient.logout(refresh);
       }
     } catch {
-      // Proceed with local cleanup even if token already expired
+      // Proceed with local cleanup
     } finally {
       localStorage.removeItem('auth_tokens');
       localStorage.removeItem('tenant_id');
@@ -462,22 +506,25 @@ export default function DashboardPage() {
   }
 
   const tabs: { key: TabKey; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-    { key: 'qa', label: 'AI Analyst', icon: MessageCircle },
+    { key: 'qa', label: 'AI Analyst Chat', icon: MessageCircle },
     { key: 'documents', label: `Documents (${documents.length})`, icon: FileText },
     { key: 'charts', label: 'Charts', icon: BarChart3 },
     { key: 'team', label: `Team (${memberships.length})`, icon: Users },
-    { key: 'billing', label: 'Billing & UPI', icon: CreditCard },
+    { key: 'billing', label: 'Billing & UPI QR', icon: CreditCard },
     { key: 'apikeys', label: 'API Keys', icon: KeyRound },
     { key: 'security', label: 'Security & Audit', icon: ShieldCheck },
   ];
 
   const usage = billing?.live_usage;
-  const queryPct =
-    usage && usage.query_limit > 0 ? Math.min(100, Math.round((usage.queries_used / usage.query_limit) * 100)) : 0;
+  const queryLimit = usage?.query_limit ?? 12;
+  const queriesUsed = usage?.queries_used ?? queries.length;
+  const queryPct = queryLimit > 0 ? Math.min(100, Math.round((queriesUsed / queryLimit) * 100)) : 0;
   const storagePct =
     usage && usage.storage_limit_bytes > 0
       ? Math.min(100, Math.round((usage.storage_used_bytes / usage.storage_limit_bytes) * 100))
       : 0;
+  const activePlanKey = billing?.plan?.key || company?.plan?.key || 'free';
+  const activeKeyCount = apiKeys.filter((k) => k.is_active).length;
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -495,7 +542,7 @@ export default function DashboardPage() {
             <div className="min-w-0">
               <p className="text-sm font-semibold text-white truncate">{company?.name || 'Workspace'}</p>
               <p className="text-[11px] text-slate-400">
-                {billing?.plan?.name || company?.plan?.name || 'Free'} Plan · {company?.status || 'trial'}
+                {billing?.plan?.name || company?.plan?.name || 'Free'} Plan · {queriesUsed}/{queryLimit} queries
               </p>
             </div>
           </div>
@@ -550,27 +597,24 @@ export default function DashboardPage() {
           <div className="glass-panel rounded-xl p-4">
             <p className="text-xs text-slate-400">Monthly AI Queries</p>
             <p className="text-2xl font-bold text-white mt-1">
-              {usage?.queries_used ?? queries.length}
-              <span className="text-sm font-normal text-slate-500"> / {usage?.query_limit ?? 50}</span>
+              {queriesUsed}
+              <span className="text-sm font-normal text-slate-500"> / {queryLimit}</span>
             </p>
             <div className="h-1.5 rounded-full bg-white/10 mt-2 overflow-hidden">
               <div className="h-full bg-gradient-to-r from-violet-500 to-cyan-400" style={{ width: `${queryPct}%` }} />
             </div>
           </div>
           <div className="glass-panel rounded-xl p-4">
-            <p className="text-xs text-slate-400">Active Team Seats</p>
-            <p className="text-2xl font-bold text-white mt-1">
-              {memberships.length || 1}
-              <span className="text-sm font-normal text-slate-500">
-                {' '}
-                / {usage?.user_limit && usage.user_limit > 0 ? usage.user_limit : '∞'}
-              </span>
-            </p>
-            <p className="text-[11px] text-slate-400 mt-0.5">RBAC enforced</p>
+            <p className="text-xs text-slate-400">Dual LLM Engine</p>
+            <p className="text-lg font-bold text-violet-300 mt-1">VaultLite + VaultPro</p>
+            <p className="text-[11px] text-slate-400 mt-0.5">Smart auto-routing active</p>
           </div>
           <div className="glass-panel rounded-xl p-4">
-            <p className="text-xs text-slate-400">Security Posture</p>
-            <p className="text-2xl font-bold text-emerald-400 mt-1">Protected</p>
+            <p className="text-xs text-slate-400">API Keys ({activePlanKey === 'free' ? 'Max 1 Free' : 'Active'})</p>
+            <p className="text-2xl font-bold text-emerald-400 mt-1">
+              {activeKeyCount}
+              {activePlanKey === 'free' && <span className="text-sm font-normal text-slate-500"> / 1</span>}
+            </p>
             <p className="text-[11px] text-slate-400 mt-0.5">{auditLogs.length} audit events logged</p>
           </div>
         </div>
@@ -584,114 +628,295 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* TAB 1: AI ANALYST */}
+        {/* TAB 1: APPLICATION-LEVEL AI ANALYST CHAT */}
         {activeTab === 'qa' && (
-          <div className="grid lg:grid-cols-3 gap-6">
-            <Card className="lg:col-span-2">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <MessageCircle className="h-5 w-5 text-violet-400" />
-                  Ask AI Analyst
+          <div className="grid lg:grid-cols-12 gap-6 items-start">
+            {/* Left Sidebar: Document Scope Picker + Quick Upload + Delete */}
+            <Card className="lg:col-span-4">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <FileText className="h-4 w-4 text-violet-400" />
+                  Document Context Scope
                 </CardTitle>
-                <CardDescription>
-                  Query uploaded PDFs, Excel workbooks, CSV exports, and handbooks with grounded citations
+                <CardDescription className="text-xs">
+                  Click files below to restrict chat answers to specific documents, or leave unselected to search all.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <form onSubmit={handleAsk} className="flex gap-2">
-                  <Input
-                    placeholder="e.g., What is the total revenue across all months?"
-                    value={question}
-                    onChange={(e) => setQuestion(e.target.value)}
-                  />
-                  <Button type="submit" disabled={submittingQuery}>
-                    {submittingQuery ? 'Analyzing...' : 'Ask'}
-                  </Button>
-                </form>
-
-                <div className="space-y-3 pt-2">
-                  {queries.length === 0 ? (
-                    <div className="rounded-xl border border-dashed border-white/15 p-8 text-center text-sm text-slate-400">
-                      No queries yet. Upload a PDF, Excel, CSV, or TXT file on the right and ask your first question.
-                    </div>
-                  ) : (
-                    queries.map((q) => (
-                      <div key={q.id} className="rounded-xl border border-white/10 bg-white/[0.03] p-4 text-sm space-y-2">
-                        <div className="flex items-start justify-between gap-2">
-                          <span className="font-semibold text-white">{q.question}</span>
-                          <span
-                            className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase shrink-0 ${
-                              q.status === 'completed'
-                                ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
-                                : q.status === 'failed'
-                                ? 'bg-red-500/15 text-red-300 border border-red-500/30'
-                                : 'bg-white/10 text-slate-300'
-                            }`}
-                          >
-                            {q.status}
-                          </span>
-                        </div>
-                        {q.result?.answer_text && (
-                          <p className="text-slate-300 whitespace-pre-wrap leading-relaxed">{q.result.answer_text}</p>
-                        )}
-                        {q.result?.model && (
-                          <p className="text-[11px] text-slate-500 font-mono">
-                            model: {q.result.model}
-                            {typeof q.result.confidence === 'number' &&
-                              ` · confidence: ${Math.round(q.result.confidence * 100)}%`}
-                          </p>
-                        )}
-                        {q.error_message && <p className="text-xs text-red-400">{q.error_message}</p>}
-                      </div>
-                    ))
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <Upload className="h-4 w-4 text-violet-400" />
-                  Quick Document Upload
-                </CardTitle>
-                <CardDescription>PDF, Excel (.xlsx/.xls), CSV, TXT</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
+                {/* Quick Upload */}
                 <form
                   onSubmit={handleUpload}
-                  className="space-y-3 rounded-xl border border-dashed border-white/15 p-3.5 bg-white/[0.02]"
+                  className="space-y-2.5 rounded-xl border border-dashed border-white/15 p-3 bg-white/[0.02]"
                 >
                   <input
                     ref={fileInputRef}
                     type="file"
                     accept=".pdf,.xlsx,.xls,.csv,.txt"
                     onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
-                    className="block w-full text-xs text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-violet-600 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white cursor-pointer"
+                    className="block w-full text-xs text-slate-300 file:mr-2.5 file:rounded-lg file:border-0 file:bg-violet-600 file:px-2.5 file:py-1.5 file:text-xs file:font-medium file:text-white cursor-pointer"
                   />
-                  <Button type="submit" size="sm" disabled={uploading || !selectedFile} className="w-full">
-                    {uploading ? 'Processing...' : 'Upload & Index'}
+                  <Button type="submit" size="sm" disabled={uploading || !selectedFile} className="w-full gap-1.5">
+                    <Upload className="h-3.5 w-3.5" />
+                    {uploading ? 'Indexing...' : 'Upload & Index File'}
                   </Button>
                 </form>
 
+                {/* File Scope Selector List with Delete */}
                 <div className="space-y-2">
-                  <p className="text-xs font-medium text-slate-400">Indexed Files ({documents.length})</p>
-                  {documents.slice(0, 5).map((doc) => (
-                    <div
-                      key={doc.id}
-                      className="flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.02] p-2.5 text-xs"
-                    >
-                      <span className="truncate font-medium text-slate-200">{doc.filename}</span>
-                      <span className="uppercase text-[10px] text-emerald-400 font-semibold ml-2">{doc.status}</span>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-slate-400 font-medium">
+                      {selectedDocIds.length === 0
+                        ? `Searching All (${documents.length})`
+                        : `Selected: ${selectedDocIds.length} file(s)`}
+                    </span>
+                    {selectedDocIds.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedDocIds([])}
+                        className="text-violet-300 hover:text-violet-200 underline text-[11px]"
+                      >
+                        Reset to All
+                      </button>
+                    )}
+                  </div>
+
+                  {documents.length === 0 ? (
+                    <p className="text-xs text-slate-500 py-4 text-center">No files uploaded yet.</p>
+                  ) : (
+                    <div className="space-y-1.5 max-h-[340px] overflow-y-auto pr-1">
+                      {documents.map((doc) => {
+                        const isSelected = selectedDocIds.includes(doc.id);
+                        return (
+                          <div
+                            key={doc.id}
+                            className={`flex items-center justify-between gap-2 rounded-xl border p-2.5 text-xs transition-colors ${
+                              isSelected
+                                ? 'border-violet-400/60 bg-violet-500/15 text-white'
+                                : 'border-white/10 bg-white/[0.02] text-slate-300 hover:bg-white/[0.05]'
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => toggleDocumentSelection(doc.id)}
+                              className="flex items-center gap-2 min-w-0 flex-1 text-left"
+                            >
+                              <span
+                                className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
+                                  isSelected
+                                    ? 'border-violet-400 bg-violet-500 text-white'
+                                    : 'border-white/25 bg-transparent'
+                                }`}
+                              >
+                                {isSelected && <Check className="h-3 w-3" />}
+                              </span>
+                              <div className="min-w-0">
+                                <p className="truncate font-medium">{doc.filename}</p>
+                                <p className="text-[10px] text-slate-400">
+                                  {(doc.file_size / 1024).toFixed(1)} KB · {doc.status.toUpperCase()}
+                                </p>
+                              </div>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteDocument(doc.id, doc.filename)}
+                              title={`Delete ${doc.filename}`}
+                              className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-500/10 shrink-0 transition-colors"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        );
+                      })}
                     </div>
-                  ))}
-                  {documents.length > 5 && (
-                    <Button variant="ghost" size="sm" className="w-full text-xs" onClick={() => setActiveTab('documents')}>
-                      View all {documents.length} documents
-                    </Button>
                   )}
                 </div>
               </CardContent>
+            </Card>
+
+            {/* Right Main Column: Full ChatGPT-Style Conversational Analyst */}
+            <Card className="lg:col-span-8 flex flex-col h-[640px]">
+              {/* Chat Header with Dual-Model Switcher */}
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-5 py-3.5">
+                <div className="flex items-center gap-2.5">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-violet-500/20 border border-violet-400/30 text-violet-300">
+                    <Bot className="h-4 w-4" />
+                  </span>
+                  <div>
+                    <h2 className="text-sm font-semibold text-white">AI Analyst Workspace Chat</h2>
+                    <p className="text-[11px] text-slate-400">
+                      Scope:{' '}
+                      <span className="text-cyan-300 font-medium">
+                        {selectedDocIds.length === 0
+                          ? 'All Uploaded Documents'
+                          : selectedDocIds.map((id) => docNameMap.get(id) || 'File').join(', ')}
+                      </span>
+                    </p>
+                  </div>
+                </div>
+
+                {/* Dual-Model Tier Selector */}
+                <div className="flex items-center gap-1 rounded-lg border border-white/15 bg-black/30 p-1 text-[11px]">
+                  {[
+                    { key: 'auto' as ModelTier, label: 'Auto', icon: Sparkles },
+                    { key: 'vaultlite' as ModelTier, label: 'VaultLite-1.5', icon: Zap },
+                    { key: 'vaultpro' as ModelTier, label: 'VaultPro-Analyst', icon: Cpu },
+                  ].map((m) => (
+                    <button
+                      key={m.key}
+                      type="button"
+                      onClick={() => setModelTier(m.key)}
+                      className={`flex items-center gap-1 rounded-md px-2.5 py-1 font-medium transition-colors ${
+                        modelTier === m.key
+                          ? 'bg-violet-600 text-white shadow'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      <m.icon className="h-3 w-3" />
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Chat Thread Scroll Area */}
+              <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
+                {chronologicalQueries.length === 0 && !submittingQuery ? (
+                  <div className="h-full flex flex-col items-center justify-center text-center space-y-5 py-8">
+                    <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-500/25 to-cyan-500/25 border border-violet-400/30 text-violet-300">
+                      <Sparkles className="h-7 w-7" />
+                    </div>
+                    <div className="space-y-1 max-w-md">
+                      <h3 className="text-base font-semibold text-white">Ask VaultLite-1.5 or VaultPro-Analyst</h3>
+                      <p className="text-xs text-slate-400">
+                        Select specific files on the left or query your entire vault. Numeric CSV/Excel files include
+                        exact pre-computed statistics for 100% accurate totals and comparisons.
+                      </p>
+                    </div>
+                    <div className="grid sm:grid-cols-2 gap-2 w-full max-w-lg">
+                      {STARTER_PROMPTS.map((prompt) => (
+                        <button
+                          key={prompt}
+                          type="button"
+                          onClick={() => handleAsk(undefined, prompt)}
+                          className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5 text-left text-xs text-slate-300 hover:border-violet-400/40 hover:bg-violet-500/10 transition-colors"
+                        >
+                          {prompt}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    {chronologicalQueries.map((q) => (
+                      <div key={q.id} className="space-y-3">
+                        {/* User Message Bubble */}
+                        <div className="flex justify-end">
+                          <div className="max-w-[82%] space-y-1">
+                            <div className="rounded-2xl rounded-tr-sm bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-2.5 text-sm text-white shadow-md">
+                              {q.question}
+                            </div>
+                            <div className="flex items-center justify-end gap-1.5 text-[10px] text-slate-500">
+                              <User className="h-3 w-3" />
+                              {q.document_ids && q.document_ids.length > 0 ? (
+                                <span className="text-cyan-400">
+                                  Scoped: {q.document_ids.map((id) => docNameMap.get(id) || 'Doc').join(', ')}
+                                </span>
+                              ) : (
+                                <span>All documents</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Assistant Message Bubble */}
+                        <div className="flex items-start gap-2.5">
+                          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-violet-500/20 border border-violet-400/30 text-violet-300 mt-0.5">
+                            <Bot className="h-3.5 w-3.5" />
+                          </span>
+                          <div className="max-w-[85%] rounded-2xl rounded-tl-sm border border-white/10 bg-white/[0.04] px-4 py-3 text-sm space-y-2">
+                            {q.status === 'failed' ? (
+                              <p className="text-xs text-red-400">
+                                Failed: {q.error_message || 'An error occurred while running the model.'}
+                              </p>
+                            ) : (
+                              <p className="text-slate-200 whitespace-pre-wrap leading-relaxed">
+                                {q.result?.answer_text || 'Processing...'}
+                              </p>
+                            )}
+
+                            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/10 pt-2 text-[11px] text-slate-400">
+                              <div className="flex flex-wrap items-center gap-2">
+                                {q.result?.model && (
+                                  <span className="rounded-md bg-violet-500/15 border border-violet-400/25 px-2 py-0.5 font-mono text-[10px] text-violet-200">
+                                    {q.result.model}
+                                  </span>
+                                )}
+                                {typeof q.result?.confidence === 'number' && (
+                                  <span className="font-mono text-[10px] text-emerald-400">
+                                    {Math.round(q.result.confidence * 100)}% grounded
+                                  </span>
+                                )}
+                              </div>
+
+                              {q.result?.answer_text && (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    await navigator.clipboard.writeText(q.result?.answer_text || '');
+                                    setCopiedAnswerId(q.id);
+                                    setTimeout(() => setCopiedAnswerId(''), 1800);
+                                  }}
+                                  className="inline-flex items-center gap-1 text-[10px] text-slate-400 hover:text-white"
+                                >
+                                  {copiedAnswerId === q.id ? (
+                                    <Check className="h-3 w-3 text-emerald-400" />
+                                  ) : (
+                                    <Copy className="h-3 w-3" />
+                                  )}
+                                  {copiedAnswerId === q.id ? 'Copied' : 'Copy'}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+
+                    {submittingQuery && (
+                      <div className="flex items-start gap-2.5">
+                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-violet-500/20 border border-violet-400/30 text-violet-300">
+                          <Bot className="h-3.5 w-3.5 animate-pulse" />
+                        </span>
+                        <div className="rounded-2xl rounded-tl-sm border border-violet-400/30 bg-violet-500/10 px-4 py-3 text-xs text-violet-200">
+                          Running {modelTier === 'vaultlite' ? 'VaultLite-1.5' : modelTier === 'vaultpro' ? 'VaultPro-Analyst' : 'Smart AI Router'}...
+                        </div>
+                      </div>
+                    )}
+                    <div ref={chatEndRef} />
+                  </>
+                )}
+              </div>
+
+              {/* Chat Composer Footer */}
+              <form
+                onSubmit={(e) => handleAsk(e)}
+                className="border-t border-white/10 p-3.5 bg-black/25 flex items-center gap-2"
+              >
+                <Input
+                  placeholder={
+                    selectedDocIds.length > 0
+                      ? `Ask about ${selectedDocIds.length} selected file(s)...`
+                      : 'Message AI Analyst (e.g., What is the total revenue across all months?)'
+                  }
+                  value={question}
+                  onChange={(e) => setQuestion(e.target.value)}
+                  disabled={submittingQuery}
+                />
+                <Button type="submit" disabled={submittingQuery || !question.trim()} className="gap-1.5 shrink-0">
+                  <Send className="h-3.5 w-3.5" />
+                  Send
+                </Button>
+              </form>
             </Card>
           </div>
         )}
@@ -757,6 +982,18 @@ export default function DashboardPage() {
                         </div>
 
                         <div className="flex items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="gap-1.5"
+                            onClick={() => {
+                              setSelectedDocIds([doc.id]);
+                              setActiveTab('qa');
+                            }}
+                          >
+                            <MessageCircle className="h-3.5 w-3.5 text-violet-300" />
+                            Chat with File
+                          </Button>
                           {isTabular && doc.status === 'ready' && (
                             <Button
                               variant="outline"
@@ -772,12 +1009,13 @@ export default function DashboardPage() {
                             </Button>
                           )}
                           <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => handleDeleteDocument(doc.id)}
-                            title="Delete document"
+                            variant="destructive"
+                            size="sm"
+                            className="gap-1"
+                            onClick={() => handleDeleteDocument(doc.id, doc.filename)}
                           >
-                            <Trash2 className="h-4 w-4 text-red-400" />
+                            <Trash2 className="h-3.5 w-3.5" />
+                            Delete
                           </Button>
                         </div>
                       </div>
@@ -1031,7 +1269,7 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* TAB 5: BILLING & UPI */}
+        {/* TAB 5: BILLING & DYNAMIC UPI QR */}
         {activeTab === 'billing' && (
           <div className="space-y-6">
             <div className="grid md:grid-cols-3 gap-4">
@@ -1050,7 +1288,7 @@ export default function DashboardPage() {
                 <CardHeader className="pb-2">
                   <CardDescription>Monthly AI Queries</CardDescription>
                   <CardTitle className="text-2xl">
-                    {usage?.queries_used ?? 0} / {usage?.query_limit ?? 50}
+                    {queriesUsed} / {queryLimit}
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
@@ -1082,10 +1320,10 @@ export default function DashboardPage() {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <QrCode className="h-5 w-5 text-violet-400" />
-                  Subscription Plans — Direct UPI QR / UPI ID Checkout
+                  Dynamic Fixed-Amount UPI QR Checkout
                 </CardTitle>
                 <CardDescription>
-                  Zero payment gateway fees. Scan the UPI QR, enter your UTR reference, and activate instantly.
+                  Select any plan to auto-generate a real scannable NPCI UPI QR code locked to that plan&apos;s exact INR amount.
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -1127,6 +1365,10 @@ export default function DashboardPage() {
                               <Check className="h-3.5 w-3.5 text-emerald-400" />
                               {plan.user_limit < 0 ? 'Unlimited seats' : `${plan.user_limit} team seats`}
                             </li>
+                            <li className="flex items-center gap-1.5">
+                              <Check className="h-3.5 w-3.5 text-emerald-400" />
+                              {plan.key === 'free' ? 'Max 1 API key' : 'Unlimited API keys'}
+                            </li>
                           </ul>
                         </div>
 
@@ -1137,7 +1379,11 @@ export default function DashboardPage() {
                           onClick={() => setSelectedPlanForUpi(plan)}
                           className="w-full"
                         >
-                          {isCurrent ? 'Active Plan' : plan.price_monthly_inr === 0 ? 'Switch to Free' : 'Pay with UPI'}
+                          {isCurrent
+                            ? 'Active Plan'
+                            : plan.price_monthly_inr === 0
+                            ? 'Switch to Free'
+                            : `Generate ₹${plan.price_monthly_inr.toLocaleString('en-IN')} QR`}
                         </Button>
                       </div>
                     );
@@ -1190,7 +1436,11 @@ export default function DashboardPage() {
                   <KeyRound className="h-4 w-4 text-violet-400" />
                   Generate Scoped API Key
                 </CardTitle>
-                <CardDescription>Hashed at rest with 90-day expiry and instant revocation</CardDescription>
+                <CardDescription>
+                  {activePlanKey === 'free'
+                    ? 'Free plan allows max 1 active API key. Upgrade for unlimited keys.'
+                    : 'Hashed at rest with 90-day expiry and instant revocation.'}
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <form onSubmit={handleCreateApiKey} className="space-y-3">
@@ -1203,8 +1453,16 @@ export default function DashboardPage() {
                       required
                     />
                   </div>
-                  <Button type="submit" className="w-full" disabled={creatingKey}>
-                    {creatingKey ? 'Generating...' : 'Generate API Key'}
+                  <Button
+                    type="submit"
+                    className="w-full"
+                    disabled={creatingKey || (activePlanKey === 'free' && activeKeyCount >= 1)}
+                  >
+                    {activePlanKey === 'free' && activeKeyCount >= 1
+                      ? 'Free Limit Reached (1/1)'
+                      : creatingKey
+                      ? 'Generating...'
+                      : 'Generate API Key'}
                   </Button>
                 </form>
 
@@ -1235,7 +1493,9 @@ export default function DashboardPage() {
             <Card className="lg:col-span-2">
               <CardHeader>
                 <CardTitle className="text-base">Active &amp; Revoked API Keys ({apiKeys.length})</CardTitle>
-                <CardDescription>Send via <code className="text-cyan-300">X-API-Key</code> header</CardDescription>
+                <CardDescription>
+                  Send via <code className="text-cyan-300">X-API-Key</code> header
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-2.5">
                 {apiKeys.length === 0 ? (
@@ -1272,7 +1532,7 @@ export default function DashboardPage() {
               {[
                 { label: 'Tenant Isolation', value: 'Strict Row-Level', note: 'Middleware + DRF BelongsToTenant' },
                 { label: 'Session Security', value: 'JWT + Blacklist', note: 'Tokens revoked server-side on logout' },
-                { label: 'Upload & Billing Guard', value: 'Active', note: 'Path-traversal + UTR anti-replay' },
+                { label: 'Upload & Billing Guard', value: 'Active', note: 'Magic-byte, zip-bomb & UTR anti-replay' },
               ].map((item) => (
                 <Card key={item.label}>
                   <CardHeader className="pb-2">

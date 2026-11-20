@@ -43,6 +43,11 @@ class QueryCreateSerializer(serializers.Serializer):
         default=list
     )
     idempotency_key = serializers.CharField(max_length=100, required=False)
+    model_tier = serializers.ChoiceField(
+        choices=[('auto', 'Auto'), ('vaultlite', 'VaultLite-1.5'), ('vaultpro', 'VaultPro-Analyst')],
+        required=False,
+        default='auto',
+    )
 
     def validate_question(self, value):
         if not value.strip():

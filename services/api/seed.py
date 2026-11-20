@@ -23,7 +23,7 @@ def create_subscription_plans():
             'price_monthly_inr': 0,
             'price_monthly_usd': 0,
             'storage_limit_bytes': 1 * 1024 * 1024 * 1024,  # 1 GB
-            'query_limit_monthly': 50,
+            'query_limit_monthly': 12,
             'user_limit': 2,
             'features': ['basic_qa', 'csv_upload'],
             'sort_order': 0,

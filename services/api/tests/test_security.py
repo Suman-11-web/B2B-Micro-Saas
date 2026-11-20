@@ -194,3 +194,31 @@ class SecurityHardeningTests(TestCase):
         self.assertEqual(res['X-Content-Type-Options'], 'nosniff')
         self.assertEqual(res['X-Frame-Options'], 'DENY')
         self.assertTrue(len(res['X-Request-ID']) > 10)
+
+    def test_dual_llm_router_upi_qr_engine_and_free_api_key_limit(self):
+        from apps.accounts.models import SubscriptionPlan
+        from apps.queries.llm import resolve_model_tier
+
+        # 1. Dual-model smart routing
+        tier_lite, brand_lite, _ = resolve_model_tier('What is the refund policy?', 'auto')
+        tier_pro, brand_pro, _ = resolve_model_tier('What is the total revenue breakdown by region?', 'auto')
+        self.assertEqual((tier_lite, brand_lite), ('vaultlite', 'VaultLite-1.5'))
+        self.assertEqual((tier_pro, brand_pro), ('vaultpro', 'VaultPro-Analyst'))
+
+        # 2. Free-tier API key limit (max 1 active key) + dynamic fixed-amount UPI QR generator
+        SubscriptionPlan.objects.create(
+            key='starter', name='Starter', price_monthly_inr=3000, price_monthly_usd=49,
+            storage_limit_bytes=5 * 1024**3, query_limit_monthly=500, user_limit=5,
+        )
+        client_f, _ = self._register_tenant('free_lim@example.com', 'free-lim')
+        k1 = client_f.post('/api/v1/api-keys/', {'name': 'Key 1', 'scopes': ['read']}, format='json', HTTP_HOST='localhost')
+        self.assertEqual(k1.status_code, 201)
+        k2 = client_f.post('/api/v1/api-keys/', {'name': 'Key 2', 'scopes': ['read']}, format='json', HTTP_HOST='localhost')
+        self.assertEqual(k2.status_code, 402)
+        self.assertEqual(k2.data['error'], 'api_key_limit_exceeded')
+
+        qr_res = client_f.get('/api/v1/billing/upi-qr/?plan=starter&upi_id=merchant@okaxis', HTTP_HOST='localhost')
+        self.assertEqual(qr_res.status_code, 200, qr_res.data)
+        self.assertEqual(qr_res.data['amount_inr'], 3000)
+        self.assertIn('am=3000', qr_res.data['upi_uri'])
+        self.assertTrue(qr_res.data['qr_data_uri'].startswith('data:image/svg+xml'))

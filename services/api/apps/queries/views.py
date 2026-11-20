@@ -26,7 +26,7 @@ def _has_real_openai_key() -> bool:
     return bool(key) and not key.startswith('sk-your-')
 
 
-def _process_query_locally(query: Query):
+def _process_query_locally(query: Query, model_tier: str = 'auto'):
     """Run retrieval + answer generation synchronously for instant local dev results."""
     from apps.queries.retrieval import Retriever, build_context
     from apps.accounts.models import UsageEvent
@@ -70,7 +70,7 @@ def _process_query_locally(query: Query):
         if _has_real_openai_key():
             from apps.queries.llm import generate_answer, check_grounding
             context = build_context(retrieved)
-            answer = check_grounding(generate_answer(query.question, context), retrieved)
+            answer = check_grounding(generate_answer(query.question, context, model_tier=model_tier), retrieved)
             answer_text = answer.get('answer') or 'No answer generated.'
             confidence = float(answer.get('confidence', 0.8))
             citations = answer.get('citations', [])
@@ -199,7 +199,7 @@ class QueryViewSet(viewsets.ModelViewSet):
         with transaction.atomic():
             locked_company = Company.objects.select_for_update().get(id=request.company.id)
             sub = locked_company.active_subscription or locked_company.subscriptions.order_by('-created_at').first()
-            query_limit = sub.plan.query_limit_monthly if sub and sub.plan else 50
+            query_limit = sub.plan.query_limit_monthly if sub and sub.plan else 12
             month_start = timezone.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             used_queries = UsageEvent.objects.filter(
                 company=locked_company,
@@ -222,8 +222,9 @@ class QueryViewSet(viewsets.ModelViewSet):
                 idempotency_key=idempotency_key,
             )
 
+        model_tier = serializer.validated_data.get('model_tier', 'auto')
         if settings.DEBUG or getattr(settings, 'USE_LOCAL_STORAGE', False):
-            _process_query_locally(query)
+            _process_query_locally(query, model_tier=model_tier)
             query.refresh_from_db()
             return Response(
                 QuerySerializer(query, context={'request': request}).data,

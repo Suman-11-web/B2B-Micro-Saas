@@ -97,7 +97,7 @@ class QuotaCheckViewSet(viewsets.ReadOnlyModelViewSet):
                 return 'warning'
             return 'ok'
 
-        q_limit = plan.query_limit_monthly if plan else 50
+        q_limit = plan.query_limit_monthly if plan else 12
         s_limit = plan.storage_limit_bytes if plan else 1024 * 1024 * 1024
         u_limit = plan.user_limit if plan else 2
 
@@ -250,12 +250,58 @@ class BillingViewSet(viewsets.GenericViewSet):
             'invoices': invoices_data,
             'live_usage': {
                 'queries_used': queries_used,
-                'query_limit': plan.query_limit_monthly if plan else 50,
+                'query_limit': plan.query_limit_monthly if plan else 12,
                 'storage_used_bytes': storage_used,
                 'storage_limit_bytes': plan.storage_limit_bytes if plan else 1024 * 1024 * 1024,
                 'users_count': users_count,
                 'user_limit': plan.user_limit if plan else 2,
             },
+        })
+
+    @action(detail=False, methods=['get'], url_path='upi-qr')
+    def upi_qr(self, request):
+        """Generate a real scannable NPCI UPI QR code SVG locked to the selected plan's fixed INR amount."""
+        from urllib.parse import quote
+        import segno
+
+        plan_key = (request.query_params.get('plan') or 'starter').strip().lower()
+        upi_id = (request.query_params.get('upi_id') or '').strip()
+        merchant_name = (request.query_params.get('merchant') or 'InsightVault AI').strip()
+
+        if not upi_id:
+            return Response(
+                {'error': 'missing_upi_id', 'message': 'Merchant UPI ID is required to generate QR.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            plan = SubscriptionPlan.objects.get(key=plan_key, is_active=True)
+        except SubscriptionPlan.DoesNotExist:
+            return Response(
+                {'error': 'invalid_plan', 'message': 'Selected plan not found.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        amount = int(plan.price_monthly_inr)
+        note = f"{merchant_name} {plan.name} Plan"
+        upi_uri = (
+            f"upi://pay?pa={quote(upi_id, safe='@._-')}"
+            f"&pn={quote(merchant_name)}"
+            f"&am={amount}&cu=INR"
+            f"&tn={quote(note)}"
+        )
+
+        qr = segno.make(upi_uri, error='M')
+        qr_data_uri = qr.svg_data_uri(scale=6, border=2, dark='#0f172a', light='#ffffff')
+
+        return Response({
+            'plan_key': plan.key,
+            'plan_name': plan.name,
+            'amount_inr': amount,
+            'upi_id': upi_id,
+            'merchant_name': merchant_name,
+            'upi_uri': upi_uri,
+            'qr_data_uri': qr_data_uri,
         })
 
     @action(detail=False, methods=['post'], url_path='upi-upgrade')

@@ -155,6 +155,9 @@ export const apiClient = {
 
   getBillingOverview: () => api.get('/api/v1/billing/overview/'),
 
+  generateUpiQr: (params: { plan: string; upi_id: string; merchant?: string }) =>
+    api.get('/api/v1/billing/upi-qr/', { params }),
+
   upiUpgrade: (data: { plan_key: string; utr_number: string; payer_upi_id?: string }) =>
     api.post('/api/v1/billing/upi-upgrade/', data),
 

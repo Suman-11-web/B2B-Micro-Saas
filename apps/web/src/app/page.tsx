@@ -31,8 +31,8 @@ const PLANS = [
     cta: 'Start Free',
     features: [
       '1 GB isolated vault storage',
-      '50 AI queries / month',
-      'Up to 2 team members',
+      '12 AI queries / month',
+      'Up to 2 team members · 1 API key',
       'CSV & TXT uploads',
     ],
   },

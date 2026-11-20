@@ -421,6 +421,21 @@ class ApiKeyViewSet(viewsets.ModelViewSet):
             return ApiKeyCreateSerializer
         return ApiKeySerializer
 
+    def create(self, request, *args, **kwargs):
+        # Enforce Free-tier API key cap (strictly below 2 -> max 1 active key)
+        sub = request.company.active_subscription or request.company.subscriptions.order_by('-created_at').first()
+        plan_key = sub.plan.key if sub and sub.plan else 'free'
+        active_keys = ApiKey.objects.filter(company=request.company, is_active=True).count()
+        if plan_key == 'free' and active_keys >= 1:
+            return Response(
+                {
+                    'error': 'api_key_limit_exceeded',
+                    'message': 'Free plan is limited to 1 active API key. Upgrade to Starter or higher for more keys.',
+                },
+                status=status.HTTP_402_PAYMENT_REQUIRED,
+            )
+        return super().create(request, *args, **kwargs)
+
     def perform_create(self, serializer):
         # The raw key is returned in the serializer response
         serializer.save()
