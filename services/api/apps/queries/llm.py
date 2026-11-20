@@ -123,20 +123,41 @@ def generate_answer(
         )
 
         message = response.choices[0].message
+        raw: Dict[str, Any] = {}
         if getattr(message, "tool_calls", None):
-            tool_call = message.tool_calls[0]
-            result = json.loads(tool_call.function.arguments)
-        else:
-            content_text = (message.content or "").strip()
-            result = {
-                "answer": content_text or "No answer generated.",
-                "confidence": 0.8,
-                "citations": [],
-                "summary": content_text[:200],
-                "follow_up_questions": [],
-                "requires_analytics": False,
-                "analysis_type": "none",
-            }
+            args_str = message.tool_calls[0].function.arguments or "{}"
+            try:
+                parsed = json.loads(args_str)
+                raw = parsed if isinstance(parsed, dict) else {"answer": str(parsed)}
+            except Exception:
+                raw = {"answer": args_str}
+
+        answer_text = (
+            raw.get("answer")
+            or raw.get("response")
+            or raw.get("text")
+            or raw.get("summary")
+            or (message.content or "").strip()
+        )
+        if not answer_text and raw:
+            answer_text = json.dumps(raw)
+        answer_text = str(answer_text or "No answer generated.").strip()
+
+        try:
+            confidence = float(raw.get("confidence", 0.85))
+        except (TypeError, ValueError):
+            confidence = 0.85
+
+        result = {
+            "answer": answer_text,
+            "confidence": max(0.0, min(1.0, confidence)),
+            "citations": raw.get("citations") if isinstance(raw.get("citations"), list) else [],
+            "chart": raw.get("chart") if isinstance(raw.get("chart"), dict) else {},
+            "summary": str(raw.get("summary") or answer_text[:200]),
+            "follow_up_questions": raw.get("follow_up_questions") if isinstance(raw.get("follow_up_questions"), list) else [],
+            "requires_analytics": bool(raw.get("requires_analytics", False)),
+            "analysis_type": str(raw.get("analysis_type") or "none"),
+        }
 
         usage = getattr(response, "usage", None)
         result["tokens_input"] = getattr(usage, "prompt_tokens", 0) or 0

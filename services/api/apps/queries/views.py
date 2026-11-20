@@ -71,10 +71,10 @@ def _process_query_locally(query: Query):
             from apps.queries.llm import generate_answer, check_grounding
             context = build_context(retrieved)
             answer = check_grounding(generate_answer(query.question, context), retrieved)
-            answer_text = answer['answer']
-            confidence = answer['confidence']
-            citations = answer['citations']
-            summary = answer['summary']
+            answer_text = answer.get('answer') or 'No answer generated.'
+            confidence = float(answer.get('confidence', 0.8))
+            citations = answer.get('citations', [])
+            summary = answer.get('summary', '')
             follow_ups = answer.get('follow_up_questions', [])
             tokens_in = answer.get('tokens_input', 0)
             tokens_out = answer.get('tokens_output', 0)
