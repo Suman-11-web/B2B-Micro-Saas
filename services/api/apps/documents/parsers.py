@@ -44,6 +44,40 @@ def _df_to_markdown(df: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
+def _build_tabular_summary(df: pd.DataFrame, label: str) -> str:
+    """Pre-compute exact deterministic statistics (totals, min/max rows, group-by sums) so LLMs never miscalculate."""
+    if df.empty:
+        return ""
+
+    numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+    cat_cols = [c for c in df.columns.tolist() if c not in numeric_cols]
+    lines = [f"Computed Summary Statistics ({label}, {len(df)} rows):"]
+
+    for col in numeric_cols:
+        series = df[col].dropna()
+        if series.empty:
+            continue
+        total = series.sum()
+        mean = series.mean()
+        max_idx = series.idxmax()
+        min_idx = series.idxmin()
+        max_row = ", ".join(f"{c}={df.loc[max_idx, c]}" for c in df.columns)
+        min_row = ", ".join(f"{c}={df.loc[min_idx, c]}" for c in df.columns)
+        lines.append(
+            f"- {col}: total={total:g}, average={mean:.2f}, max={series.max():g} ({max_row}), min={series.min():g} ({min_row})"
+        )
+
+        # Group-by totals for low-cardinality categorical columns (e.g. region, plan, department)
+        for cat in cat_cols[:3]:
+            nunique = df[cat].nunique(dropna=True)
+            if 1 < nunique <= 15:
+                grouped = df.groupby(cat, dropna=True)[col].sum().sort_values(ascending=False)
+                breakdown = ", ".join(f"{k}={v:g}" for k, v in grouped.items())
+                lines.append(f"  - {col} by {cat}: {breakdown}")
+
+    return "\n".join(lines)
+
+
 def parse_pdf(filepath: str) -> Dict[str, Any]:
     """Parse PDF file and extract text with page info."""
     chunks = []
@@ -105,8 +139,11 @@ def parse_excel(filepath: str) -> Dict[str, Any]:
         # Convert to DataFrame for easier processing
         df = pd.DataFrame(rows[1:], columns=headers)
 
-        # Create chunks from rows
+        # Create chunks from rows with exact pre-computed statistics
+        summary_text = _build_tabular_summary(df, sheet_name)
         sheet_text = f"Sheet: {sheet_name}\n"
+        if summary_text:
+            sheet_text += summary_text + "\n\n"
         sheet_text += _df_to_markdown(df)
 
         sheet_chunks = chunk_text(sheet_text)
@@ -144,7 +181,8 @@ def parse_csv(filepath: str) -> Dict[str, Any]:
     column_info['default'] = df.columns.tolist()
     sheet_names = ['default']
 
-    csv_text = _df_to_markdown(df)
+    summary_text = _build_tabular_summary(df, 'CSV')
+    csv_text = (summary_text + "\n\n" if summary_text else "") + _df_to_markdown(df)
     csv_chunks = chunk_text(csv_text)
 
     for i, chunk_text_content in enumerate(csv_chunks):
