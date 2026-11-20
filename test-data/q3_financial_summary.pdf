@@ -1,0 +1,42 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 434 >>
+stream
+BT
+/F1 12 Tf
+50 750 Td
+18 TL
+(InsightVault AI - Q3 2026 Executive Financial Summary) Tj
+T* (Annual Recurring Revenue [ARR]: INR 48,00,000 [USD 58,000]) Tj
+T* (Net Revenue Retention [NRR]: 118 percent) Tj
+T* (Active B2B Customers: 64 companies across India and US) Tj
+T* (Top Enterprise Client: Apex Logistics Pvt Ltd [INR 15,000/month Business plan]) Tj
+T* (Gross Margin: 84 percent with average AI query latency of 1.4 seconds) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000726 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+796
+%%EOF

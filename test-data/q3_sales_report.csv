@@ -1,0 +1,7 @@
+month,region,plan,revenue_usd,new_customers,churned_customers
+January,North,Starter,12000,12,1
+February,South,Growth,18500,15,2
+March,West,Business,27000,18,1
+April,North,Growth,21500,20,2
+May,South,Business,31000,22,1
+June,West,Business,35000,25,0

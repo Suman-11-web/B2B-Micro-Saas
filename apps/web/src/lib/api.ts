@@ -1,6 +1,6 @@
 /**
  * API client for B2B Micro-SaaS
- * Handles authentication, retry logic, and request/response transformation
+ * Handles JWT authentication, automatic token refresh, token revocation on logout, and tenant scoping
  */
 
 import axios, { AxiosError, AxiosInstance, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
@@ -11,16 +11,14 @@ interface RetryableRequestConfig extends InternalAxiosRequestConfig {
   _retry?: boolean;
 }
 
-// Create axios instance
 const api: AxiosInstance = axios.create({
   baseURL: API_URL,
-  timeout: 30000,
+  timeout: 60000,
   headers: {
     'Content-Type': 'application/json',
   },
 });
 
-// Request interceptor for auth token
 api.interceptors.request.use(
   async (config: InternalAxiosRequestConfig): Promise<InternalAxiosRequestConfig> => {
     if (typeof window !== 'undefined') {
@@ -41,13 +39,11 @@ api.interceptors.request.use(
         config.headers['X-Tenant-ID'] = tenantId;
       }
     }
-
     return config;
   },
   (error: AxiosError) => Promise.reject(error)
 );
 
-// Response interceptor for error handling and token refresh
 api.interceptors.response.use(
   (response: AxiosResponse) => response,
   async (error: AxiosError): Promise<AxiosResponse> => {
@@ -65,10 +61,8 @@ api.interceptors.response.use(
               const response = await axios.post(`${API_URL}/api/v1/auth/refresh/`, {
                 refresh,
               });
-
               const newTokens = response.data;
               localStorage.setItem('auth_tokens', JSON.stringify(newTokens));
-
               originalRequest.headers.Authorization = `Bearer ${newTokens.access}`;
               return api(originalRequest);
             }
@@ -92,13 +86,12 @@ api.interceptors.response.use(
   }
 );
 
-// API endpoints
 export const apiClient = {
   // Auth
   login: (data: { email: string; password: string; company_id?: string }) =>
     api.post('/api/v1/auth/login/', data),
 
-  logout: () => api.post('/api/v1/auth/logout/'),
+  logout: (refresh?: string) => api.post('/api/v1/auth/logout/', refresh ? { refresh } : {}),
 
   register: (data: { email: string; name: string; password: string; company_name: string; company_slug: string }) =>
     api.post('/api/v1/auth/register/', data),
@@ -108,14 +101,41 @@ export const apiClient = {
 
   updateCompany: (data: Record<string, unknown>) => api.patch('/api/v1/companies/update_current/', data),
 
+  // Team / Memberships
+  listMemberships: () => api.get('/api/v1/memberships/'),
+
+  inviteMember: (data: { user_email: string; role: string }) => api.post('/api/v1/memberships/', data),
+
+  changeMemberRole: (id: string, role: string) => api.patch(`/api/v1/memberships/${id}/change_role/`, { role }),
+
+  activateMember: (id: string) => api.post(`/api/v1/memberships/${id}/activate/`),
+
+  removeMember: (id: string) => api.post(`/api/v1/memberships/${id}/remove/`),
+
+  // API Keys & Security Audit Logs
+  listApiKeys: () => api.get('/api/v1/api-keys/'),
+
+  createApiKey: (data: { name: string; scopes: string[]; expires_in_days?: number }) =>
+    api.post('/api/v1/api-keys/', data),
+
+  revokeApiKey: (id: string) => api.post(`/api/v1/api-keys/${id}/revoke/`),
+
+  listAuditLogs: () => api.get('/api/v1/audit-logs/'),
+
   // Documents
   listDocuments: (params?: Record<string, unknown>) => api.get('/api/v1/documents/', { params }),
 
   getDocument: (id: string) => api.get(`/api/v1/documents/${id}/`),
 
-  initiateDocumentUpload: (data: Record<string, unknown>) => api.post('/api/v1/documents/', data),
+  uploadDocument: (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post('/api/v1/documents/upload/', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
 
-  confirmDocumentUpload: (id: string) => api.post(`/api/v1/documents/${id}/confirm_upload/`),
+  getDocumentChartData: (id: string) => api.get(`/api/v1/documents/${id}/chart-data/`),
 
   reprocessDocument: (id: string) => api.post(`/api/v1/documents/${id}/reprocess/`),
 
@@ -130,8 +150,15 @@ export const apiClient = {
 
   listQueries: (params?: Record<string, unknown>) => api.get('/api/v1/queries/', { params }),
 
-  // Billing
+  // Plans & Billing
+  listPlans: () => api.get('/api/v1/plans/'),
+
   getBillingOverview: () => api.get('/api/v1/billing/overview/'),
+
+  upiUpgrade: (data: { plan_key: string; utr_number: string; payer_upi_id?: string }) =>
+    api.post('/api/v1/billing/upi-upgrade/', data),
+
+  listInvoices: () => api.get('/api/v1/invoices/'),
 
   getUsage: (params?: Record<string, unknown>) => api.get('/api/v1/usage-summaries/', { params }),
 

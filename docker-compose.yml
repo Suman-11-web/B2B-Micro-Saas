@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:16
+    image: pgvector/pgvector:pg16
     container_name: b2b-postgres
     environment:
       POSTGRES_USER: ${DB_USER:-b2b}
@@ -26,19 +26,18 @@ services:
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a $${REDIS_PASSWORD:-redispassword} ping | grep -q PONG"]
       interval: 5s
       timeout: 5s
       retries: 20
 
   minio:
-    image: bitnami/minio:latest
+    image: minio/minio:latest
     container_name: b2b-minio
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      MINIO_DEFAULT_BUCKETS: "b2b-test"
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -49,6 +48,45 @@ services:
       interval: 10s
       timeout: 5s
       retries: 30
+
+  api:
+    build:
+      context: ./services/api
+      dockerfile: Dockerfile
+    container_name: b2b-api
+    env_file:
+      - ./services/api/.env
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-b2b}:${DB_PASSWORD:-b2bpassword}@postgres:5432/${DB_NAME:-b2b}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redispassword}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-redispassword}@redis:6379/1
+      S3_ENDPOINT: http://minio:9000
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./services/api
+      dockerfile: Dockerfile
+    container_name: b2b-worker
+    command: celery -A config worker --loglevel=info
+    env_file:
+      - ./services/api/.env
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-b2b}:${DB_PASSWORD:-b2bpassword}@postgres:5432/${DB_NAME:-b2b}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redispassword}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-redispassword}@redis:6379/1
+      S3_ENDPOINT: http://minio:9000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
 volumes:
   postgres_data:
