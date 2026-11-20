@@ -1,0 +1,78 @@
+# Production AWS NVIDIA GPU Stack (e.g. EC2 g5.xlarge / g6.xlarge with 24GB VRAM)
+# Usage:
+#   cp .env.example .env
+#   docker compose -f docker/docker-compose.gpu.yml up -d --build
+
+services:
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: llm-vllm
+    restart: unless-stopped
+    ipc: host
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+    command: >
+      --model ${VLLM_PRIMARY_MODEL:-Qwen/Qwen2.5-7B-Instruct}
+      --served-model-name ${VLLM_MODEL_KEY:-qwen2.5-7b-instruct}
+      --host 0.0.0.0
+      --port 8001
+      --gpu-memory-utilization 0.88
+      --max-model-len 8192
+      --enable-auto-tool-choice
+      --tool-call-parser hermes
+    ports:
+      - "8001:8001"
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+      - ../models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 15s
+      timeout: 10s
+      start_period: 120s
+      retries: 20
+
+  rag:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.rag
+    container_name: llm-rag
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      LLM_API_URL: http://gateway:8100
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
+      RERANK_MODEL: ${RERANK_MODEL:-cross-encoder/ms-marco-MiniLM-L-6-v2}
+    ports:
+      - "8002:8002"
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+
+  gateway:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.gateway
+    container_name: llm-gateway
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      LLM_GATEWAY_PORT: 8100
+      VLLM_URL: http://vllm:8001
+      RAG_URL: http://rag:8002
+    ports:
+      - "8100:8100"
+    depends_on:
+      - vllm
+      - rag
+
+volumes:
+  hf_cache:

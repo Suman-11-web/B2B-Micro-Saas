@@ -1,0 +1,44 @@
+default_chat_model: qwen2.5-7b-instruct
+default_embedding_model: bge-small-en-v1.5
+
+chat_models:
+  qwen2.5-7b-instruct:
+    hf_repo: Qwen/Qwen2.5-7B-Instruct
+    ollama_tag: qwen2.5:7b-instruct
+    context_length: 32768
+    quantization: null
+    dtype: bfloat16
+    min_vram_gb: 16
+    gated: false
+    description: "Strong open-weight B2B reasoning, JSON/tool calling, and tabular analysis model."
+
+  llama-3.1-8b-instruct:
+    hf_repo: meta-llama/Llama-3.1-8B-Instruct
+    ollama_tag: llama3.1:8b
+    context_length: 8192
+    quantization: null
+    dtype: bfloat16
+    min_vram_gb: 16
+    gated: true
+    description: "Meta Llama 3.1 8B Instruct (requires HF_TOKEN with license accepted)."
+
+  mistral-7b-instruct:
+    hf_repo: mistralai/Mistral-7B-Instruct-v0.3
+    ollama_tag: mistral:7b-instruct
+    context_length: 8192
+    quantization: null
+    dtype: bfloat16
+    min_vram_gb: 16
+    gated: false
+    description: "Fast general-purpose 7B instruction model."
+
+embedding_models:
+  bge-small-en-v1.5:
+    hf_repo: BAAI/bge-small-en-v1.5
+    dimensions: 384
+    description: "Fast, high-accuracy open-source retrieval embedding model."
+
+  all-minilm-l6-v2:
+    hf_repo: sentence-transformers/all-MiniLM-L6-v2
+    dimensions: 384
+    description: "Lightweight CPU-friendly embedding model."

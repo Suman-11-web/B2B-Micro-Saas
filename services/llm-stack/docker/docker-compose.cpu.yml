@@ -1,0 +1,54 @@
+# CPU-Only / Non-GPU Self-Hosted LLM Stack (works on standard AWS EC2 t3.xlarge / c7i.xlarge)
+# Uses Ollama's OpenAI-compatible server behind your FastAPI Gateway + local BGE embeddings.
+# Usage:
+#   cp .env.example .env
+#   docker compose -f docker/docker-compose.cpu.yml up -d --build
+#   docker exec llm-ollama ollama pull qwen2.5:3b
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: llm-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  rag:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.rag
+    container_name: llm-rag
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      LLM_API_URL: http://gateway:8100
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+    ports:
+      - "8002:8002"
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+
+  gateway:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.gateway
+    container_name: llm-gateway
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      LLM_GATEWAY_PORT: 8100
+      VLLM_URL: http://ollama:11434
+      RAG_URL: http://rag:8002
+    ports:
+      - "8100:8100"
+    depends_on:
+      - ollama
+      - rag
+
+volumes:
+  ollama_data:
+  hf_cache:
