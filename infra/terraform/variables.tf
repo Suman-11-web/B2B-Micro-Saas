@@ -157,4 +157,5 @@ variable "pagerduty_service_key" {
   description = "PagerDuty service key"
   type        = string
   default     = ""
+  sensitive   = true
 }

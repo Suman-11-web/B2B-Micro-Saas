@@ -1,19 +1,31 @@
 """
-Views for billing app - invoices, usage, quotas, webhooks, and UPI plan upgrades.
+Views for billing app - invoices, usage, quotas, HMAC-verified webhooks, and UPI plan upgrades.
 """
 from datetime import timedelta
+import hashlib
+import hmac
+import json
+import time
+
+from django.conf import settings
+from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
-from rest_framework import viewsets, status
+from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from apps.billing.models import Invoice, UsageSummary, QuotaCheck, WebhookEvent
+from rest_framework.views import APIView
+
+from apps.accounts.models import Company, Subscription, SubscriptionPlan
+from apps.accounts.permissions import BelongsToTenant, HasPermission, IsOwnerOrAdmin
+from apps.accounts.serializers import SubscriptionPlanSerializer, SubscriptionSerializer
+from apps.billing.models import Invoice, QuotaCheck, UsageSummary, WebhookEvent
 from apps.billing.serializers import (
-    InvoiceSerializer, UsageSummarySerializer, QuotaCheckSerializer,
+    InvoiceSerializer,
+    QuotaCheckSerializer,
+    UsageSummarySerializer,
     WebhookEventSerializer,
 )
-from apps.accounts.serializers import SubscriptionSerializer, SubscriptionPlanSerializer
-from apps.accounts.permissions import BelongsToTenant, IsOwnerOrAdmin, HasPermission
 
 
 class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
@@ -53,7 +65,7 @@ class QuotaCheckViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=False, methods=['get'])
     def current(self, request):
         """Get live quota status for all resources."""
-        from apps.accounts.models import UsageEvent, Membership
+        from apps.accounts.models import Membership, UsageEvent
         from apps.documents.models import Document
 
         company = request.company
@@ -97,12 +109,100 @@ class QuotaCheckViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class WebhookEventViewSet(viewsets.ReadOnlyModelViewSet):
-    """Webhook event viewing (for debugging)."""
+    """Platform-admin-only webhook audit viewing (prevents cross-tenant webhook payload leaks)."""
     queryset = WebhookEvent.objects.all()
     serializer_class = WebhookEventSerializer
-    permission_classes = [BelongsToTenant, IsOwnerOrAdmin]
+    permission_classes = [permissions.IsAdminUser]
     filterset_fields = ['provider', 'processed', 'event_type']
     ordering = ['-created_at']
+
+
+class StripeWebhookView(APIView):
+    """Stripe webhook receiver with HMAC-SHA256 signature verification and 5-minute replay protection."""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        secret = getattr(settings, 'STRIPE_WEBHOOK_SECRET', '') or ''
+        sig_header = request.META.get('HTTP_STRIPE_SIGNATURE', '')
+        if not secret or not sig_header:
+            return Response({'error': 'invalid_signature', 'message': 'Missing Stripe webhook signature.'}, status=400)
+
+        parts = {}
+        for item in sig_header.split(','):
+            if '=' in item:
+                k, v = item.split('=', 1)
+                parts[k.strip()] = v.strip()
+
+        timestamp = parts.get('t')
+        sig_v1 = parts.get('v1')
+        if not timestamp or not sig_v1:
+            return Response({'error': 'invalid_signature', 'message': 'Malformed Stripe-Signature header.'}, status=400)
+
+        try:
+            if abs(time.time() - int(timestamp)) > 300:
+                return Response({'error': 'replay_detected', 'message': 'Webhook timestamp outside tolerance window.'}, status=400)
+        except ValueError:
+            return Response({'error': 'invalid_signature', 'message': 'Invalid timestamp.'}, status=400)
+
+        signed_payload = f"{timestamp}.".encode('utf-8') + request.body
+        expected = hmac.new(secret.encode('utf-8'), signed_payload, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, sig_v1):
+            return Response({'error': 'invalid_signature', 'message': 'Stripe signature verification failed.'}, status=400)
+
+        try:
+            payload = json.loads(request.body.decode('utf-8'))
+        except Exception:
+            return Response({'error': 'invalid_payload', 'message': 'Invalid JSON payload.'}, status=400)
+
+        event_id = payload.get('id', '')
+        event_type = payload.get('type', '')
+        if not event_id:
+            return Response({'error': 'invalid_payload', 'message': 'Missing event id.'}, status=400)
+
+        if WebhookEvent.objects.filter(provider='stripe', event_id=event_id).exists():
+            return Response({'status': 'duplicate_ignored'}, status=200)
+
+        from apps.billing.tasks import process_stripe_webhook
+        if settings.DEBUG:
+            process_stripe_webhook(event_id, event_type, payload)
+        else:
+            process_stripe_webhook.delay(event_id, event_type, payload)
+        return Response({'status': 'accepted'}, status=200)
+
+
+class RazorpayWebhookView(APIView):
+    """Razorpay webhook receiver with constant-time HMAC-SHA256 verification and idempotency."""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        secret = getattr(settings, 'RAZORPAY_WEBHOOK_SECRET', '') or ''
+        signature = request.META.get('HTTP_X_RAZORPAY_SIGNATURE', '')
+        if not secret or not signature:
+            return Response({'error': 'invalid_signature', 'message': 'Missing Razorpay webhook signature.'}, status=400)
+
+        expected = hmac.new(secret.encode('utf-8'), request.body, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, signature):
+            return Response({'error': 'invalid_signature', 'message': 'Razorpay signature verification failed.'}, status=400)
+
+        try:
+            payload = json.loads(request.body.decode('utf-8'))
+        except Exception:
+            return Response({'error': 'invalid_payload', 'message': 'Invalid JSON payload.'}, status=400)
+
+        event_id = request.META.get('HTTP_X_RAZORPAY_EVENT_ID') or payload.get('event_id') or hashlib.sha256(request.body).hexdigest()
+        event_type = payload.get('event', '')
+
+        if WebhookEvent.objects.filter(provider='razorpay', event_id=event_id).exists():
+            return Response({'status': 'duplicate_ignored'}, status=200)
+
+        from apps.billing.tasks import process_razorpay_webhook
+        if settings.DEBUG:
+            process_razorpay_webhook(event_id, event_type, payload)
+        else:
+            process_razorpay_webhook.delay(event_id, event_type, payload)
+        return Response({'status': 'accepted'}, status=200)
 
 
 class BillingViewSet(viewsets.GenericViewSet):
@@ -112,7 +212,7 @@ class BillingViewSet(viewsets.GenericViewSet):
     @action(detail=False, methods=['get'])
     def overview(self, request):
         """Get complete billing overview with live usage and invoices."""
-        from apps.accounts.models import SubscriptionPlan, UsageEvent, Membership
+        from apps.accounts.models import Membership, UsageEvent
         from apps.documents.models import Document
 
         company = request.company
@@ -160,9 +260,7 @@ class BillingViewSet(viewsets.GenericViewSet):
 
     @action(detail=False, methods=['post'], url_path='upi-upgrade')
     def upi_upgrade(self, request):
-        """Record a UPI payment (UTR / Reference ID) and upgrade the company's subscription."""
-        from apps.accounts.models import Subscription, SubscriptionPlan
-
+        """Record a UPI payment (UTR / Reference ID) atomically with replay protection."""
         plan_key = (request.data.get('plan_key') or '').strip().lower()
         utr_number = (request.data.get('utr_number') or '').strip()
         payer_upi_id = (request.data.get('payer_upi_id') or '').strip()
@@ -187,51 +285,51 @@ class BillingViewSet(viewsets.GenericViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if plan.price_monthly_inr > 0 and Invoice.objects.filter(provider_invoice_id=utr_number).exists():
-            return Response(
-                {'error': 'duplicate_utr', 'message': 'This UPI Transaction ID / UTR has already been used.'},
-                status=status.HTTP_400_BAD_REQUEST,
+        with transaction.atomic():
+            company = Company.objects.select_for_update().get(id=request.company.id)
+            if plan.price_monthly_inr > 0 and Invoice.objects.filter(provider_invoice_id=utr_number).exists():
+                return Response(
+                    {'error': 'duplicate_utr', 'message': 'This UPI Transaction ID / UTR has already been used.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            now = timezone.now()
+            period_end = now + timedelta(days=30 if plan.price_monthly_inr > 0 else 3650)
+
+            company.subscriptions.filter(status__in=[Subscription.Status.ACTIVE, Subscription.Status.TRIALING]).update(
+                status=Subscription.Status.CANCELLED,
+                cancelled_at=now,
             )
 
-        company = request.company
-        now = timezone.now()
-        period_end = now + timedelta(days=30 if plan.price_monthly_inr > 0 else 3650)
+            subscription = Subscription.objects.create(
+                company=company,
+                plan=plan,
+                status=Subscription.Status.ACTIVE,
+                provider=Subscription.Provider.MANUAL,
+                provider_subscription_id=utr_number or f'free_{company.slug}',
+                current_period_start=now,
+                current_period_end=period_end,
+                metadata={'payment_method': 'upi', 'utr_number': utr_number, 'payer_upi_id': payer_upi_id},
+            )
 
-        # Cancel any older active subscriptions before activating the new one
-        company.subscriptions.filter(status__in=[Subscription.Status.ACTIVE, Subscription.Status.TRIALING]).update(
-            status=Subscription.Status.CANCELLED,
-            cancelled_at=now,
-        )
+            if company.status != 'active':
+                company.status = 'active'
+                company.save(update_fields=['status'])
 
-        subscription = Subscription.objects.create(
-            company=company,
-            plan=plan,
-            status=Subscription.Status.ACTIVE,
-            provider=Subscription.Provider.MANUAL,
-            provider_subscription_id=utr_number or f'free_{company.slug}',
-            current_period_start=now,
-            current_period_end=period_end,
-            metadata={'payment_method': 'upi', 'utr_number': utr_number, 'payer_upi_id': payer_upi_id},
-        )
-
-        if company.status != 'active':
-            company.status = 'active'
-            company.save(update_fields=['status'])
-
-        invoice = Invoice.objects.create(
-            company=company,
-            subscription=subscription,
-            provider=Subscription.Provider.MANUAL,
-            provider_invoice_id=utr_number or f'INV-{now.strftime("%Y%m%d%H%M%S")}',
-            status=Invoice.Status.PAID,
-            amount_inr=plan.price_monthly_inr,
-            amount_usd=plan.price_monthly_usd,
-            currency='INR',
-            period_start=now,
-            period_end=period_end,
-            paid_at=now,
-            metadata={'payment_method': 'upi', 'utr_number': utr_number, 'payer_upi_id': payer_upi_id},
-        )
+            invoice = Invoice.objects.create(
+                company=company,
+                subscription=subscription,
+                provider=Subscription.Provider.MANUAL,
+                provider_invoice_id=utr_number or f'INV-{now.strftime("%Y%m%d%H%M%S")}',
+                status=Invoice.Status.PAID,
+                amount_inr=plan.price_monthly_inr,
+                amount_usd=plan.price_monthly_usd,
+                currency='INR',
+                period_start=now,
+                period_end=period_end,
+                paid_at=now,
+                metadata={'payment_method': 'upi', 'utr_number': utr_number, 'payer_upi_id': payer_upi_id},
+            )
 
         return Response({
             'message': f'Upgraded to {plan.name} plan successfully!',

@@ -14,6 +14,8 @@ client = openai.OpenAI(
     api_key=settings.OPENAI_API_KEY,
     organization=settings.OPENAI_ORG_ID or None,
     base_url=settings.OPENAI_BASE_URL,
+    timeout=60.0,
+    max_retries=2,
 )
 
 

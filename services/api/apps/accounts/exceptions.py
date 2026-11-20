@@ -15,15 +15,18 @@ logger = logging.getLogger(__name__)
 
 
 def custom_exception_handler(exc, context):
-    """Custom exception handler for consistent error responses."""
+    """Custom exception handler for consistent error responses with correlation trace ID."""
+    request = context.get('request') if context else None
+    trace_id = getattr(request, 'trace_id', None)
+
     # Call DRF's default handler first
     response = exception_handler(exc, context)
 
     # If DRF couldn't handle it, create a generic response
     if response is None:
-        logger.exception('Unhandled exception', exc_info=exc)
+        logger.exception('Unhandled exception', exc_info=exc, extra={'trace_id': trace_id})
         return Response(
-            {'error': 'internal_error', 'message': 'An unexpected error occurred.'},
+            {'error': 'internal_error', 'message': 'An unexpected error occurred.', 'trace_id': trace_id},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
@@ -32,6 +35,7 @@ def custom_exception_handler(exc, context):
         'error': get_error_code(exc),
         'message': get_error_message(exc, response),
         'details': response.data if isinstance(response.data, (dict, list)) else None,
+        'trace_id': trace_id,
     }
 
     response.data = custom_data

@@ -105,6 +105,8 @@ class AuditMiddleware(MiddlewareMixin):
     ]
 
     def process_request(self, request):
+        import uuid as _uuid
+        request.trace_id = request.META.get('HTTP_X_REQUEST_ID') or str(_uuid.uuid4())
         # Store request info for audit logging in process_response
         request._audit_info = {
             'method': request.method,
@@ -115,7 +117,9 @@ class AuditMiddleware(MiddlewareMixin):
         return None
 
     def process_response(self, request, response):
-        # Defense-in-depth security headers
+        # Defense-in-depth security headers + correlation trace ID
+        if hasattr(request, 'trace_id'):
+            response['X-Request-ID'] = request.trace_id
         response.setdefault('X-Content-Type-Options', 'nosniff')
         response.setdefault('X-Frame-Options', 'DENY')
         response.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')

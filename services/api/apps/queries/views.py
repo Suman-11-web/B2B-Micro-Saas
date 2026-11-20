@@ -178,32 +178,49 @@ class QueryViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_200_OK
             )
 
-        # Enforce monthly query quota
+        # Enforce cross-tenant document_ids ownership + atomic monthly query quota
+        from django.db import transaction
         from django.db.models import Sum
-        from apps.accounts.models import UsageEvent
-        sub = request.company.active_subscription or request.company.subscriptions.order_by('-created_at').first()
-        query_limit = sub.plan.query_limit_monthly if sub and sub.plan else 50
-        month_start = timezone.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        used_queries = UsageEvent.objects.filter(
-            company=request.company,
-            event_type=UsageEvent.EventType.QUERY,
-            created_at__gte=month_start,
-        ).aggregate(total=Sum('quantity'))['total'] or 0
-        if query_limit > 0 and used_queries >= query_limit:
-            return Response(
-                {'error': 'query_quota_exceeded', 'message': 'Monthly AI query quota reached. Please upgrade your plan in Billing & UPI.'},
-                status=status.HTTP_402_PAYMENT_REQUIRED
-            )
+        from apps.accounts.models import Company, UsageEvent
+        from apps.documents.models import Document
 
-        query = Query.objects.create(
-            company=request.company,
-            user=request.user,
-            question=serializer.validated_data['question'],
-            source_filter=serializer.validated_data['source_filter'],
-            document_ids=serializer.validated_data.get('document_ids', []),
-            data_source_ids=serializer.validated_data.get('data_source_ids', []),
-            idempotency_key=idempotency_key,
-        )
+        requested_doc_ids = [str(d) for d in serializer.validated_data.get('document_ids', [])]
+        if requested_doc_ids:
+            owned_count = Document.objects.filter(
+                company=request.company,
+                id__in=requested_doc_ids,
+            ).count()
+            if owned_count != len(set(requested_doc_ids)):
+                return Response(
+                    {'error': 'forbidden_document', 'message': 'One or more document IDs do not belong to your company.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        with transaction.atomic():
+            locked_company = Company.objects.select_for_update().get(id=request.company.id)
+            sub = locked_company.active_subscription or locked_company.subscriptions.order_by('-created_at').first()
+            query_limit = sub.plan.query_limit_monthly if sub and sub.plan else 50
+            month_start = timezone.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            used_queries = UsageEvent.objects.filter(
+                company=locked_company,
+                event_type=UsageEvent.EventType.QUERY,
+                created_at__gte=month_start,
+            ).aggregate(total=Sum('quantity'))['total'] or 0
+            if query_limit > 0 and used_queries >= query_limit:
+                return Response(
+                    {'error': 'query_quota_exceeded', 'message': 'Monthly AI query quota reached. Please upgrade your plan in Billing & UPI.'},
+                    status=status.HTTP_402_PAYMENT_REQUIRED,
+                )
+
+            query = Query.objects.create(
+                company=locked_company,
+                user=request.user,
+                question=serializer.validated_data['question'],
+                source_filter=serializer.validated_data['source_filter'],
+                document_ids=requested_doc_ids,
+                data_source_ids=serializer.validated_data.get('data_source_ids', []),
+                idempotency_key=idempotency_key,
+            )
 
         if settings.DEBUG or getattr(settings, 'USE_LOCAL_STORAGE', False):
             _process_query_locally(query)

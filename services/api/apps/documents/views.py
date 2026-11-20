@@ -162,6 +162,54 @@ class DocumentViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        # Magic-byte, zip-bomb, and macro validation
+        header_bytes = uploaded_file.read(16)
+        uploaded_file.seek(0)
+        if ext == '.pdf' and not header_bytes.startswith(b'%PDF-'):
+            return Response(
+                {'error': 'invalid_magic_bytes', 'message': 'File content does not match a valid PDF header.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if ext == '.xlsx':
+            if not header_bytes.startswith(b'PK\x03\x04'):
+                return Response(
+                    {'error': 'invalid_magic_bytes', 'message': 'File content does not match a valid XLSX archive.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            import zipfile
+            try:
+                with zipfile.ZipFile(uploaded_file) as zf:
+                    total_uncompressed = 0
+                    for info in zf.infolist():
+                        if 'vbaproject.bin' in info.filename.lower():
+                            return Response(
+                                {'error': 'macro_blocked', 'message': 'Macro-enabled Excel files are blocked for security.'},
+                                status=status.HTTP_400_BAD_REQUEST
+                            )
+                        total_uncompressed += info.file_size
+                        if total_uncompressed > 150 * 1024 * 1024:
+                            return Response(
+                                {'error': 'zip_bomb_detected', 'message': 'Compressed spreadsheet exceeds safe decompression limit.'},
+                                status=status.HTTP_400_BAD_REQUEST
+                            )
+                        if info.compress_size > 0 and (info.file_size / info.compress_size) > 100:
+                            return Response(
+                                {'error': 'zip_bomb_detected', 'message': 'Suspicious compression ratio detected in spreadsheet.'},
+                                status=status.HTTP_400_BAD_REQUEST
+                            )
+            except zipfile.BadZipFile:
+                return Response(
+                    {'error': 'corrupt_archive', 'message': 'Invalid or corrupted XLSX archive.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            finally:
+                uploaded_file.seek(0)
+        if ext == '.xls' and not header_bytes.startswith(b'\xd0\xcf\x11\xe0'):
+            return Response(
+                {'error': 'invalid_magic_bytes', 'message': 'File content does not match a valid XLS file.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         # Compute SHA-256 checksum
         sha256 = hashlib.sha256()
         for chunk in uploaded_file.chunks():
@@ -171,18 +219,35 @@ class DocumentViewSet(viewsets.ModelViewSet):
 
         s3_key = f"{request.company.id}/{uuid.uuid4()}{ext}"
 
-        document = Document.objects.create(
-            company=request.company,
-            source_type=Document.SourceType.UPLOAD,
-            s3_key=s3_key,
-            filename=filename,
-            original_filename=filename,
-            mime_type=mime_type,
-            file_size=uploaded_file.size,
-            checksum=checksum,
-            status=Document.Status.QUEUED,
-            uploaded_by=request.user,
-        )
+        from django.db import transaction
+        from django.db.models import Sum
+        from apps.accounts.models import Company
+
+        with transaction.atomic():
+            locked_company = Company.objects.select_for_update().get(id=request.company.id)
+            sub = locked_company.active_subscription or locked_company.subscriptions.order_by('-created_at').first()
+            storage_limit = sub.plan.storage_limit_bytes if sub and sub.plan else (1024 * 1024 * 1024)
+            used_bytes = Document.objects.filter(company=locked_company).exclude(
+                status=Document.Status.DELETED
+            ).aggregate(total=Sum('file_size'))['total'] or 0
+            if storage_limit > 0 and (used_bytes + uploaded_file.size) > storage_limit:
+                return Response(
+                    {'error': 'storage_quota_exceeded', 'message': 'Storage quota exceeded for your current plan. Please upgrade via UPI Billing.'},
+                    status=status.HTTP_402_PAYMENT_REQUIRED
+                )
+
+            document = Document.objects.create(
+                company=locked_company,
+                source_type=Document.SourceType.UPLOAD,
+                s3_key=s3_key,
+                filename=filename,
+                original_filename=filename,
+                mime_type=mime_type,
+                file_size=uploaded_file.size,
+                checksum=checksum,
+                status=Document.Status.QUEUED,
+                uploaded_by=request.user,
+            )
 
         if getattr(settings, 'USE_LOCAL_STORAGE', False):
             saved_path = save_local_file(uploaded_file, s3_key)
